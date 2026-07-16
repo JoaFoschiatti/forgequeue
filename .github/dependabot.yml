@@ -4,11 +4,34 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # rand 0.9+ replaces the OsRng API; migrate it deliberately.
+      - dependency-name: rand
+        versions: [">= 0.9"]
   - package-ecosystem: npm
     directory: /web
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # TypeScript 7 currently rejects this Vite/React build configuration.
+      - dependency-name: typescript
+        versions: [">= 7"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
