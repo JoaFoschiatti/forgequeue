@@ -31,7 +31,7 @@ pdfium-render = { version = "0.9", features = ["image_latest", "pdfium_latest", 
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
+sha2 = "0.11"
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["full"] }
