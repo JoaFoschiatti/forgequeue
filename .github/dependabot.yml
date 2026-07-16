@@ -23,9 +23,9 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
     ignore:
-      # TypeScript 7 currently rejects this Vite/React build configuration.
+      # openapi-typescript 7 currently requires TypeScript 5.x.
       - dependency-name: typescript
-        versions: [">= 7"]
+        versions: [">= 6"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
