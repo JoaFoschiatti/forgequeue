@@ -1,0 +1,12 @@
+[package]
+name = "forgequeue-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+utoipa.workspace = true
+uuid.workspace = true

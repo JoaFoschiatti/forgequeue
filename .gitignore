@@ -1,0 +1,16 @@
+/target/
+/.env
+/.env.*
+!/.env.example
+/data/
+/web/node_modules/
+/web/dist/
+/web/playwright-report/
+/web/test-results/
+*.log
+.DS_Store
+.idea/
+.vscode/
+/outputs/
+/work/
+/tmp/

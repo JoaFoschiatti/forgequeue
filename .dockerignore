@@ -1,0 +1,9 @@
+.git
+target
+web/node_modules
+web/dist
+outputs
+work
+tmp
+data
+*.log
