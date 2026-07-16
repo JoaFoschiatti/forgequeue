@@ -36,7 +36,7 @@ sqlx = { version = "0.8", default-features = false, features = ["chrono", "macro
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-tower-http = { version = "0.6", features = ["cors", "limit", "request-id", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "limit", "request-id", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2.5"
