@@ -1,0 +1,49 @@
+name: Deploy web
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-pages.yml"
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: cloudflare-pages-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: vars.CLOUDFLARE_PAGES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.pages.outputs.deployment-url }}
+    env:
+      VITE_API_URL: ${{ vars.VITE_API_URL }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Validate deployment configuration
+        run: test -n "$VITE_API_URL" && test "${VITE_API_URL#https://}" != "$VITE_API_URL"
+      - working-directory: web
+        run: npm ci
+      - working-directory: web
+        run: npm run build
+      - name: Deploy Cloudflare Pages
+        id: pages
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          command: pages deploy dist --project-name=forgequeue-web --branch=main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

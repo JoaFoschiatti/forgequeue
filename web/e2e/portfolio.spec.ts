@@ -148,3 +148,83 @@ test('muestra el fallo definitivo y permite descargar un artefacto privado', asy
   await expect(page.getByRole('img', { name: 'Resultado page-1.png' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Descargar' })).toHaveAttribute('download', 'page-1.png')
 })
+
+test('permite solicitar la cancelación de un trabajo activo', async ({ page }) => {
+  const running = { ...job, status: 'running', progress: 25, stage: 'decoding_image' }
+  let cancelRequested = false
+  await page.route(`**/api/v1/jobs/${job.id}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ...running, attempts: [], outputs: [] }),
+  }))
+  await page.route(`**/api/v1/jobs/${job.id}/events`, (route) => route.abort())
+  await page.route(`**/api/v1/jobs/${job.id}/cancel`, (route) => {
+    cancelRequested = route.request().method() === 'POST'
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...running, status: 'cancel_requested', stage: 'cancel_requested' }),
+    })
+  })
+
+  await page.goto(`/jobs/${job.id}`)
+  await page.getByRole('button', { name: 'Cancelar' }).click()
+  await expect.poll(() => cancelRequested).toBe(true)
+  await expect(page.getByText('Cancelación solicitada')).toBeVisible()
+})
+
+test('crea un trabajo nuevo al reintentar un fallo definitivo', async ({ page }) => {
+  const retryId = '01900000-0000-7000-8000-000000000002'
+  const failed = {
+    ...job,
+    status: 'dead_lettered',
+    progress: 50,
+    stage: 'dead_lettered',
+    last_error_code: 'processing_failed',
+    last_error_detail: 'Fallo transitorio agotado.',
+  }
+  await page.route(`**/api/v1/jobs/${job.id}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ...failed, attempts: [], outputs: [] }),
+  }))
+  await page.route(`**/api/v1/jobs/${job.id}/retry`, (route) => route.fulfill({
+    status: 202,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ...job,
+      id: retryId,
+      status: 'queued',
+      progress: 0,
+      stage: 'queued',
+      retry_of_job_id: job.id,
+    }),
+  }))
+
+  await page.goto(`/jobs/${job.id}`)
+  await page.getByRole('button', { name: 'Volver a intentar' }).click()
+  await expect(page).toHaveURL(`/jobs/${retryId}`)
+})
+
+test('confirma y elimina un trabajo terminal', async ({ page }) => {
+  let deleted = false
+  await page.route(`**/api/v1/jobs/${job.id}`, (route) => {
+    if (route.request().method() === 'DELETE') {
+      deleted = true
+      return route.fulfill({ status: 204 })
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...job, attempts: [], outputs: [] }),
+    })
+  })
+
+  await page.goto(`/jobs/${job.id}`)
+  await page.getByRole('button', { name: 'Eliminar' }).click()
+  const dialog = page.getByRole('alertdialog')
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Eliminar' }).click()
+  await expect.poll(() => deleted).toBe(true)
+  await expect(page).toHaveURL('/jobs')
+})

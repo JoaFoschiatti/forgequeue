@@ -142,7 +142,7 @@ DATABASE_URL=postgres://forgequeue:forgequeue@localhost:5432/forgequeue \
 cargo test -p forgequeue-server postgres_queue_contract
 ```
 
-Esa prueba lanza tres reclamos concurrentes, verifica leases únicos, aislamiento de sesiones, idempotencia, backoff, recuperación y `UPSERT` de artefactos. GitHub Actions la ejecuta contra PostgreSQL real.
+Esa prueba lanza tres reclamos concurrentes y verifica leases únicos, aislamiento de sesiones, idempotencia, cuotas que no se reinician al borrar, backoff de 5/30 segundos, dead letter, recuperación, expiración y `UPSERT` de artefactos. GitHub Actions la ejecuta contra PostgreSQL real.
 
 ## Observabilidad
 
@@ -198,7 +198,7 @@ La referencia local verificada es **100/100 éxitos en 4,41 s (22,68 trabajos/s)
 
 ## Despliegue
 
-La imagen `forgequeue` se usa con el rol `all` en un host pequeño; el frontend es estático. La receta prevista es Cloudflare Pages + Koyeb + Supabase PostgreSQL/S3. Las variables, comandos y consideraciones de cold start están en [Despliegue](docs/DEPLOYMENT.md).
+La imagen `forgequeue` se usa con el rol `all` en un host pequeño; el frontend es estático. La receta prevista es Cloudflare Pages + Koyeb + Supabase PostgreSQL/S3. El repositorio incluye un workflow de Pages y `scripts/deploy-koyeb.sh`; las credenciales, comandos y verificaciones de cold start están en [Despliegue](docs/DEPLOYMENT.md).
 
 Las migraciones se ejecutan al arrancar bajo un advisory lock de PostgreSQL, por lo que dos réplicas pueden iniciar sin competir.
 

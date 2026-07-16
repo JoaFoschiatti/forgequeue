@@ -222,21 +222,21 @@ impl Database {
 
     pub async fn upload_counts(&self, session_id: Uuid, ip_hash: &[u8]) -> Result<(i64, i64, i64)> {
         let session_count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM jobs WHERE session_id = $1 \
+            "SELECT count(*) FROM upload_events WHERE session_id = $1 \
              AND created_at >= now() - interval '1 hour'",
         )
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
         let ip_count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM jobs WHERE client_ip_hash = $1 \
+            "SELECT count(*) FROM upload_events WHERE client_ip_hash = $1 \
              AND created_at >= now() - interval '24 hours'",
         )
         .bind(ip_hash)
         .fetch_one(&self.pool)
         .await?;
         let global_count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM jobs WHERE created_at >= now() - interval '24 hours'",
+            "SELECT count(*) FROM upload_events WHERE created_at >= now() - interval '24 hours'",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -286,7 +286,7 @@ impl Database {
 
         if let Some(limits) = limits {
             let session_count = sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM jobs WHERE session_id = $1
+                "SELECT count(*) FROM upload_events WHERE session_id = $1
                  AND created_at >= now() - interval '1 hour'",
             )
             .bind(input.session_id)
@@ -298,7 +298,7 @@ impl Database {
             }
 
             let ip_count = sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM jobs WHERE client_ip_hash = $1
+                "SELECT count(*) FROM upload_events WHERE client_ip_hash = $1
                  AND created_at >= now() - interval '24 hours'",
             )
             .bind(input.client_ip_hash)
@@ -310,7 +310,7 @@ impl Database {
             }
 
             let global_count = sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM jobs WHERE created_at >= now() - interval '24 hours'",
+                "SELECT count(*) FROM upload_events WHERE created_at >= now() - interval '24 hours'",
             )
             .fetch_one(&mut *transaction)
             .await?;
@@ -382,10 +382,10 @@ impl Database {
              WHERE j.session_id = $1
                AND ($2::text IS NULL OR j.status = $2)
                AND ($3::text IS NULL OR j.kind = $3)
-               AND ($4::uuid IS NULL OR j.created_at < (
-                    SELECT c.created_at FROM jobs c WHERE c.id = $4 AND c.session_id = $1
+               AND ($4::uuid IS NULL OR (j.created_at, j.id) < (
+                    SELECT c.created_at, c.id FROM jobs c WHERE c.id = $4 AND c.session_id = $1
                ))
-             ORDER BY j.created_at DESC
+             ORDER BY j.created_at DESC, j.id DESC
              LIMIT $5",
         )
         .bind(session_id)
@@ -870,9 +870,11 @@ impl Database {
         let rows = sqlx::query_as::<_, (Uuid, Uuid)>(
             "SELECT j.id, j.session_id FROM jobs j
              WHERE j.artifacts_deleted_at IS NULL
-               AND j.artifacts_expire_at IS NOT NULL
-               AND j.artifacts_expire_at <= now()
-             ORDER BY j.artifacts_expire_at
+               AND (
+                    (j.artifacts_expire_at IS NOT NULL AND j.artifacts_expire_at <= now())
+                    OR j.metadata_expire_at <= now()
+               )
+             ORDER BY COALESCE(j.artifacts_expire_at, j.metadata_expire_at)
              LIMIT $1",
         )
         .bind(limit)
@@ -899,10 +901,17 @@ impl Database {
     }
 
     pub async fn purge_expired_metadata(&self) -> Result<u64> {
-        let deleted_jobs = sqlx::query("DELETE FROM jobs WHERE metadata_expire_at <= now()")
+        let deleted_jobs = sqlx::query(
+            "DELETE FROM jobs
+             WHERE metadata_expire_at <= now()
+               AND artifacts_deleted_at IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        sqlx::query("DELETE FROM upload_events WHERE created_at < now() - interval '24 hours'")
             .execute(&self.pool)
-            .await?
-            .rows_affected();
+            .await?;
         sqlx::query(
             "DELETE FROM anonymous_sessions s
              WHERE s.expires_at <= now()
@@ -945,7 +954,7 @@ async fn insert_job_row(
     .bind(retention_seconds)
     .execute(&mut **transaction)
     .await?;
-    Ok(sqlx::query_as::<_, JobRow>(
+    let row = sqlx::query_as::<_, JobRow>(
         "INSERT INTO jobs (
             id, session_id, kind, status, original_name, input_object_key,
             input_content_type, input_size, input_sha256, idempotency_key,
@@ -967,7 +976,18 @@ async fn insert_job_row(
     .bind(input.retry_of_job_id)
     .bind(retention_seconds)
     .fetch_one(&mut **transaction)
-    .await?)
+    .await?;
+    sqlx::query(
+        "INSERT INTO upload_events (job_id, session_id, client_ip_hash, created_at)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(row.id)
+    .bind(row.session_id)
+    .bind(input.client_ip_hash)
+    .bind(row.created_at)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(row)
 }
 
 impl TryFrom<JobRow> for StoredJob {
@@ -1106,6 +1126,27 @@ mod integration_tests {
         session_id: Uuid,
         id: Uuid,
     ) -> Result<CreateJobOutcome> {
+        insert_job_with_limits(
+            database,
+            session_id,
+            id,
+            b"limited-integration-test-ip",
+            UploadLimits {
+                session_hourly: 1,
+                ip_daily: 100,
+                global_daily: 100,
+            },
+        )
+        .await
+    }
+
+    async fn insert_job_with_limits(
+        database: &Database,
+        session_id: Uuid,
+        id: Uuid,
+        client_ip_hash: &[u8],
+        limits: UploadLimits,
+    ) -> Result<CreateJobOutcome> {
         let object_key = format!("sessions/{session_id}/jobs/{id}/input");
         database
             .create_job(
@@ -1119,15 +1160,11 @@ mod integration_tests {
                     input_size: 64,
                     input_sha256: "limited-sha256",
                     idempotency_key: None,
-                    client_ip_hash: b"limited-integration-test-ip",
+                    client_ip_hash,
                     retry_of_job_id: None,
                     metadata_retention: Duration::from_secs(86_400),
                 },
-                Some(UploadLimits {
-                    session_hourly: 1,
-                    ip_daily: 100,
-                    global_daily: 100,
-                }),
+                Some(limits),
             )
             .await
     }
@@ -1203,13 +1240,115 @@ mod integration_tests {
                 1,
                 "the other concurrent upload must be rate limited"
             );
+            let mut created_limited_job = None;
             for outcome in &limited_outcomes {
                 if let CreateJobOutcome::Created(job) = outcome {
+                    created_limited_job = Some(job.view.id);
                     database
                         .request_cancel(limited_session.id, job.view.id, Duration::from_secs(3_600))
                         .await?;
                 }
             }
+            let created_limited_job = created_limited_job.context("one limited job must exist")?;
+            assert!(
+                database
+                    .delete_job(limited_session.id, created_limited_job)
+                    .await?,
+                "the terminal limited job must be deletable"
+            );
+            assert!(
+                matches!(
+                    insert_limited_job(&database, limited_session.id, Uuid::now_v7()).await?,
+                    CreateJobOutcome::LimitExceeded(UploadLimit::SessionHourly)
+                ),
+                "deleting job metadata must not refund the hourly quota"
+            );
+
+            let ip_session_a = database
+                .create_session(b"ip-session-a", Duration::from_secs(3_600))
+                .await?;
+            let ip_session_b = database
+                .create_session(b"ip-session-b", Duration::from_secs(3_600))
+                .await?;
+            let ip_limits = UploadLimits {
+                session_hourly: 100,
+                ip_daily: 1,
+                global_daily: 100,
+            };
+            let ip_created = insert_job_with_limits(
+                &database,
+                ip_session_a.id,
+                Uuid::now_v7(),
+                b"shared-ip",
+                ip_limits,
+            )
+            .await?;
+            let CreateJobOutcome::Created(ip_created) = ip_created else {
+                return Err(anyhow!("the first shared-IP upload must be created"));
+            };
+            database
+                .request_cancel(
+                    ip_session_a.id,
+                    ip_created.view.id,
+                    Duration::from_secs(3_600),
+                )
+                .await?;
+            assert!(matches!(
+                insert_job_with_limits(
+                    &database,
+                    ip_session_b.id,
+                    Uuid::now_v7(),
+                    b"shared-ip",
+                    ip_limits,
+                )
+                .await?,
+                CreateJobOutcome::LimitExceeded(UploadLimit::IpDaily)
+            ));
+
+            let global_session_a = database
+                .create_session(b"global-session-a", Duration::from_secs(3_600))
+                .await?;
+            let global_session_b = database
+                .create_session(b"global-session-b", Duration::from_secs(3_600))
+                .await?;
+            let existing_global = database
+                .upload_counts(global_session_a.id, b"unused-ip")
+                .await?
+                .2;
+            let global_limits = UploadLimits {
+                session_hourly: 100,
+                ip_daily: 100,
+                global_daily: existing_global + 1,
+            };
+            let global_created = insert_job_with_limits(
+                &database,
+                global_session_a.id,
+                Uuid::now_v7(),
+                b"global-ip-a",
+                global_limits,
+            )
+            .await?;
+            let CreateJobOutcome::Created(global_created) = global_created else {
+                return Err(anyhow!("the first globally limited upload must be created"));
+            };
+            database
+                .request_cancel(
+                    global_session_a.id,
+                    global_created.view.id,
+                    Duration::from_secs(3_600),
+                )
+                .await?;
+            assert!(matches!(
+                insert_job_with_limits(
+                    &database,
+                    global_session_b.id,
+                    Uuid::now_v7(),
+                    b"global-ip-b",
+                    global_limits,
+                )
+                .await?,
+                CreateJobOutcome::LimitExceeded(UploadLimit::GlobalDaily)
+            ));
 
             let second = insert_job(&database, session.id, None).await?;
             let third = insert_job(&database, session.id, None).await?;
@@ -1365,6 +1504,63 @@ mod integration_tests {
             .await?;
             assert!((3.0..=5.1).contains(&seconds_until_retry));
 
+            sqlx::query("UPDATE jobs SET available_at = now() WHERE id = $1")
+                .bind(failed.job.view.id)
+                .execute(database.pool())
+                .await?;
+            let second_failed_attempt = database
+                .claim_next("worker-b-retry-2", Duration::from_secs(60))
+                .await?
+                .context("the first retry must be claimable")?;
+            assert_eq!(second_failed_attempt.job.view.id, failed.job.view.id);
+            assert_eq!(second_failed_attempt.job.view.attempt_count, 2);
+            assert_eq!(
+                database
+                    .finish_failure(FinishFailure {
+                        job_id: failed.job.view.id,
+                        attempt_id: second_failed_attempt.attempt_id,
+                        worker_id: "worker-b-retry-2",
+                        code: "temporary_failure",
+                        detail: "segundo fallo transitorio de prueba",
+                        retryable: true,
+                        artifact_retention: Duration::from_secs(3_600),
+                    })
+                    .await?,
+                Some(JobStatus::RetryScheduled)
+            );
+            let second_retry_delay = sqlx::query_scalar::<_, f64>(
+                "SELECT EXTRACT(EPOCH FROM (available_at - now()))::float8 FROM jobs WHERE id = $1",
+            )
+            .bind(failed.job.view.id)
+            .fetch_one(database.pool())
+            .await?;
+            assert!((28.0..=30.1).contains(&second_retry_delay));
+
+            sqlx::query("UPDATE jobs SET available_at = now() WHERE id = $1")
+                .bind(failed.job.view.id)
+                .execute(database.pool())
+                .await?;
+            let third_failed_attempt = database
+                .claim_next("worker-b-retry-3", Duration::from_secs(60))
+                .await?
+                .context("the second retry must be claimable")?;
+            assert_eq!(third_failed_attempt.job.view.id, failed.job.view.id);
+            assert_eq!(third_failed_attempt.job.view.attempt_count, 3);
+            assert_eq!(
+                database
+                    .finish_failure(FinishFailure {
+                        job_id: failed.job.view.id,
+                        attempt_id: third_failed_attempt.attempt_id,
+                        worker_id: "worker-b-retry-3",
+                        code: "temporary_failure",
+                        detail: "tercer fallo transitorio de prueba",
+                        retryable: true,
+                        artifact_retention: Duration::from_secs(3_600),
+                    })
+                    .await?,
+                Some(JobStatus::DeadLettered)
+            );
+
             database
                 .upsert_output(
                     NewOutput {
@@ -1450,6 +1646,38 @@ mod integration_tests {
                     .await?
                     .is_none(),
                 "expired metadata must be purged"
+            );
+
+            let orphaned = insert_job(&database, session.id, None).await?;
+            sqlx::query(
+                "UPDATE jobs SET metadata_expire_at = now() - interval '1 second' WHERE id = $1",
+            )
+            .bind(orphaned.view.id)
+            .execute(database.pool())
+            .await?;
+            database.purge_expired_metadata().await?;
+            assert!(
+                database
+                    .get_job_for_session(session.id, orphaned.view.id)
+                    .await?
+                    .is_some(),
+                "metadata must remain until object deletion has succeeded"
+            );
+            let orphan_cleanup = database.cleanup_candidates(100).await?;
+            assert!(
+                orphan_cleanup
+                    .iter()
+                    .any(|candidate| candidate.job_id == orphaned.view.id),
+                "an unfinished expired job must expose its object prefix for cleanup"
+            );
+            database.mark_artifacts_deleted(orphaned.view.id).await?;
+            assert!(database.purge_expired_metadata().await? >= 1);
+            assert!(
+                database
+                    .get_job_for_session(session.id, orphaned.view.id)
+                    .await?
+                    .is_none(),
+                "unfinished expired metadata must be purged after its objects are removed"
             );
 
             Ok::<_, anyhow::Error>(())

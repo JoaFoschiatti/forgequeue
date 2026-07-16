@@ -89,6 +89,10 @@ async fn bootstrap() -> Result<Runtime> {
     let db = Database::connect(&config.database_url).await?;
     db.migrate().await?;
     let storage = BlobStore::from_config(&config).await?;
+    storage
+        .verify()
+        .await
+        .context("failed to verify object store")?;
     let metrics = PrometheusBuilder::new()
         .install_recorder()
         .context("failed to install Prometheus recorder")?;

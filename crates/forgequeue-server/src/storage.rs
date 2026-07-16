@@ -78,6 +78,14 @@ impl BlobStore {
         Ok(())
     }
 
+    pub async fn verify(&self) -> Result<(), object_store::Error> {
+        // Polling the listing stream forces S3-compatible stores to validate the
+        // endpoint, credentials and bucket during startup. Empty stores complete
+        // successfully without requiring a public object or a probe write.
+        let _ = self.inner.list(None).try_next().await?;
+        Ok(())
+    }
+
     pub async fn get(&self, key: &str) -> Result<Bytes, object_store::Error> {
         self.inner.get(&Path::from(key)).await?.bytes().await
     }

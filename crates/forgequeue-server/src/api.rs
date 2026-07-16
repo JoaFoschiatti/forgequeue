@@ -6,7 +6,7 @@ use axum::{
     extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State},
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
-        header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
+        header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
     },
     middleware::{self, Next},
     response::{
@@ -37,7 +37,7 @@ use uuid::Uuid;
 use crate::{
     config::Config,
     db::{CreateJobOutcome, Database, NewJob, Session, UploadLimit, UploadLimits},
-    error::{AppError, AppResult, REQUEST_ID},
+    error::{AppError, AppResult, REQUEST_ID, framework_problem_response},
     processors::validate_pdf_page_count,
     storage::BlobStore,
 };
@@ -185,6 +185,24 @@ async fn request_id_context(mut request: axum::http::Request<Body>, next: Next) 
     REQUEST_ID
         .scope(request_id, async move {
             let mut response = next.run(request).await;
+            let status = response.status();
+            let is_problem = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("application/problem+json"));
+            if (status.is_client_error() || status.is_server_error()) && !is_problem {
+                let original_headers = response.headers().clone();
+                response = framework_problem_response(status);
+                for (name, value) in &original_headers {
+                    if name != CONTENT_TYPE
+                        && name != CONTENT_LENGTH
+                        && name != HeaderName::from_static("x-request-id")
+                    {
+                        response.headers_mut().append(name, value.clone());
+                    }
+                }
+            }
             response
                 .headers_mut()
                 .insert(HeaderName::from_static("x-request-id"), header_value);
@@ -199,7 +217,7 @@ async fn request_id_context(mut request: axum::http::Request<Body>, next: Next) 
     tag = "sessions",
     responses(
         (status = 201, description = "Sesión creada", body = SessionResponse),
-        (status = 500, description = "Error interno", body = ProblemDetails)
+        (status = 500, description = "Error interno", body = ProblemDetails, content_type = "application/problem+json")
     )
 )]
 async fn create_session(State(state): State<AppState>) -> AppResult<impl IntoResponse> {
@@ -228,9 +246,10 @@ async fn create_session(State(state): State<AppState>) -> AppResult<impl IntoRes
     responses(
         (status = 202, description = "Trabajo encolado", body = Job),
         (status = 200, description = "Trabajo idempotente existente", body = Job),
-        (status = 401, body = ProblemDetails),
-        (status = 422, body = ProblemDetails),
-        (status = 429, body = ProblemDetails)
+        (status = 401, body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 429, body = ProblemDetails, content_type = "application/problem+json")
     ),
     security(("bearer_auth" = []))
 )]
@@ -314,7 +333,10 @@ async fn create_job(
         ("kind" = Option<String>, Query, description = "image o pdf"),
         ("cursor" = Option<Uuid>, Query, description = "Cursor de paginación")
     ),
-    responses((status = 200, body = JobPage), (status = 401, body = ProblemDetails)),
+    responses(
+        (status = 200, body = JobPage),
+        (status = 401, body = ProblemDetails, content_type = "application/problem+json")
+    ),
     security(("bearer_auth" = []))
 )]
 async fn list_jobs(
@@ -348,7 +370,10 @@ async fn list_jobs(
     path = "/api/v1/jobs/{id}",
     tag = "jobs",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = JobDetail), (status = 404, body = ProblemDetails)),
+    responses(
+        (status = 200, body = JobDetail),
+        (status = 404, body = ProblemDetails, content_type = "application/problem+json")
+    ),
     security(("bearer_auth" = []))
 )]
 async fn get_job(
@@ -365,7 +390,10 @@ async fn get_job(
     path = "/api/v1/jobs/{id}/events",
     tag = "jobs",
     params(("id" = Uuid, Path)),
-    responses((status = 200, description = "Flujo SSE"), (status = 404, body = ProblemDetails)),
+    responses(
+        (status = 200, description = "Flujo SSE"),
+        (status = 404, body = ProblemDetails, content_type = "application/problem+json")
+    ),
     security(("bearer_auth" = []))
 )]
 async fn job_events(
@@ -421,7 +449,10 @@ async fn job_events(
     path = "/api/v1/jobs/{id}/cancel",
     tag = "jobs",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = Job), (status = 404, body = ProblemDetails)),
+    responses(
+        (status = 200, body = Job),
+        (status = 404, body = ProblemDetails, content_type = "application/problem+json")
+    ),
     security(("bearer_auth" = []))
 )]
 async fn cancel_job(
@@ -454,7 +485,10 @@ async fn cancel_job(
     path = "/api/v1/jobs/{id}/retry",
     tag = "jobs",
     params(("id" = Uuid, Path)),
-    responses((status = 202, body = Job), (status = 409, body = ProblemDetails)),
+    responses(
+        (status = 202, body = Job),
+        (status = 409, body = ProblemDetails, content_type = "application/problem+json")
+    ),
     security(("bearer_auth" = []))
 )]
 async fn retry_job(
@@ -536,7 +570,10 @@ async fn retry_job(
     path = "/api/v1/jobs/{id}",
     tag = "jobs",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 409, body = ProblemDetails)),
+    responses(
+        (status = 204),
+        (status = 409, body = ProblemDetails, content_type = "application/problem+json")
+    ),
     security(("bearer_auth" = []))
 )]
 async fn delete_job(
@@ -573,7 +610,10 @@ async fn delete_job(
     path = "/api/v1/jobs/{job_id}/outputs/{output_id}",
     tag = "jobs",
     params(("job_id" = Uuid, Path), ("output_id" = Uuid, Path)),
-    responses((status = 200, description = "Artefacto"), (status = 404, body = ProblemDetails)),
+    responses(
+        (status = 200, description = "Artefacto"),
+        (status = 404, body = ProblemDetails, content_type = "application/problem+json")
+    ),
     security(("bearer_auth" = []))
 )]
 async fn download_output(
@@ -893,9 +933,21 @@ fn hex_sha256(bytes: &[u8]) -> String {
 mod tests {
     use std::io::Cursor;
 
-    use super::{detect_upload_kind, idempotency_key, sanitize_filename, validate_image};
-    use axum::http::{HeaderMap, HeaderValue};
+    use super::{
+        detect_upload_kind, idempotency_key, request_id_context, sanitize_filename, validate_image,
+    };
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        extract::DefaultBodyLimit,
+        http::{HeaderMap, HeaderValue, Request, StatusCode},
+        middleware,
+        routing::post,
+    };
+    use bytes::Bytes;
+    use forgequeue_core::ProblemDetails;
     use image::{DynamicImage, ImageFormat, RgbImage};
+    use tower::ServiceExt;
 
     #[test]
     fn strips_path_from_uploaded_filename() {
@@ -924,5 +976,64 @@ mod tests {
         assert_eq!(kind, forgequeue_core::JobKind::Image);
         assert_eq!(content_type, "image/png");
         assert!(detect_upload_kind(b"not really a png", 4, 20).is_err());
+    }
+
+    #[tokio::test]
+    async fn framework_rejections_are_problem_details_with_request_ids() {
+        let missing = Router::new()
+            .layer(middleware::from_fn(request_id_context))
+            .oneshot(
+                Request::builder()
+                    .uri("/missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_problem(missing, StatusCode::NOT_FOUND, "not_found").await;
+
+        let oversized = Router::new()
+            .route(
+                "/upload",
+                post(|_body: Bytes| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(DefaultBodyLimit::max(4))
+            .layer(middleware::from_fn(request_id_context))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/upload")
+                    .body(Body::from("12345"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_problem(
+            oversized,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+        )
+        .await;
+    }
+
+    async fn assert_problem(response: axum::response::Response, status: StatusCode, code: &str) {
+        assert_eq!(response.status(), status);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/problem+json"
+        );
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let problem: ProblemDetails =
+            serde_json::from_slice(&to_bytes(response.into_body(), 16 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(problem.status, status.as_u16());
+        assert_eq!(problem.code, code);
+        assert_eq!(problem.request_id, request_id);
     }
 }
