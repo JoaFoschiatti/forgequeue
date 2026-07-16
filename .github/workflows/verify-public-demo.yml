@@ -1,0 +1,24 @@
+name: Verify public demo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: vars.PUBLIC_DEMO_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_URL: ${{ vars.VITE_API_URL }}
+      FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate public URLs
+        run: |
+          test -n "$API_URL"
+          test -n "$FRONTEND_URL"
+      - name: Verify frontend, API, CORS and processing
+        run: bash scripts/verify-deployment.sh

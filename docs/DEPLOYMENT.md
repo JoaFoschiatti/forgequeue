@@ -39,7 +39,7 @@ export RATE_LIMIT_SALT='<32-o-más-bytes-aleatorios>'
 ./scripts/deploy-koyeb.sh
 ```
 
-El script guarda las cuatro credenciales sensibles como secretos de Koyeb mediante stdin, crea un Web Service gratuito desde el `Dockerfile`, selecciona el rol `all`, configura puerto y health check, y espera el despliegue. No admite modo privilegiado.
+El script guarda las cuatro credenciales sensibles como secretos de Koyeb mediante stdin, crea un Web Service gratuito desde el `Dockerfile`, selecciona el rol `all`, configura puerto y health check, y espera el despliegue. Si el servicio ya existe, actualiza la misma configuración y despliega una revisión nueva; se puede repetir para cambiar CORS o rotar secretos. No admite modo privilegiado.
 
 Configuración equivalente en el panel:
 
@@ -100,11 +100,14 @@ Actualizar `CORS_ORIGIN` en Koyeb con el dominio final y reiniciar.
 ## Verificación posterior
 
 ```bash
-curl -fsS https://<backend>.koyeb.app/health/ready
-curl -fsS https://<backend>.koyeb.app/api/openapi.json >/dev/null
-curl -fsS https://<frontend>.pages.dev/ >/dev/null
-API_URL=https://<backend>.koyeb.app WORKER_METRICS_URLS= bash scripts/smoke.sh
+API_URL=https://<backend>.koyeb.app \
+FRONTEND_URL=https://<frontend>.pages.dev \
+bash scripts/verify-deployment.sh
 ```
+
+El script espera hasta cinco minutos por el cold start, valida frontend, OpenAPI y CORS, y después ejecuta el smoke real de imágenes, PDFs, límites e idempotencia.
+
+La misma comprobación puede ejecutarse desde GitHub Actions con el workflow **Verify public demo**. Además de `VITE_API_URL`, crear las variables `PUBLIC_FRONTEND_URL` y `PUBLIC_DEMO_ENABLED=true`, y ejecutarlo manualmente. Cada ejecución completa crea cinco trabajos válidos y consume esa parte de la cuota diaria de la demo.
 
 Completar además un upload desde el dominio de Pages para comprobar CORS y descargar un artefacto desde una segunda petición autenticada.
 

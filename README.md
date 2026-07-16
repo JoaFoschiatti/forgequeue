@@ -198,7 +198,7 @@ La referencia local verificada es **100/100 éxitos en 4,41 s (22,68 trabajos/s)
 
 ## Despliegue
 
-La imagen `forgequeue` se usa con el rol `all` en un host pequeño; el frontend es estático. La receta prevista es Cloudflare Pages + Koyeb + Supabase PostgreSQL/S3. El repositorio incluye un workflow de Pages y `scripts/deploy-koyeb.sh`; las credenciales, comandos y verificaciones de cold start están en [Despliegue](docs/DEPLOYMENT.md).
+La imagen `forgequeue` se usa con el rol `all` en un host pequeño; el frontend es estático. La receta prevista es Cloudflare Pages + Koyeb + Supabase PostgreSQL/S3. El repositorio incluye un workflow de Pages, un despliegue Koyeb repetible y `scripts/verify-deployment.sh` para probar la demo pública de extremo a extremo; las credenciales y comandos están en [Despliegue](docs/DEPLOYMENT.md).
 
 Las migraciones se ejecutan al arrancar bajo un advisory lock de PostgreSQL, por lo que dos réplicas pueden iniciar sin competir.
 
