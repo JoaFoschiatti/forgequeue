@@ -11,19 +11,18 @@ permissions:
 jobs:
   security:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
-      issues: write
     steps:
       - uses: actions/checkout@v5
-      - name: Audit Rust dependencies
-        uses: rustsec/audit-check@v2.0.0
+      - uses: dtolnay/rust-toolchain@master
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # SQLx records its disabled MySQL driver in Cargo.lock; ForgeQueue only
-          # enables PostgreSQL and `cargo tree -i rsa` confirms rsa is unreachable.
-          ignore: RUSTSEC-2023-0071
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit Rust dependencies
+        # SQLx records its disabled MySQL driver in Cargo.lock; ForgeQueue only
+        # enables PostgreSQL and `cargo tree -i rsa` confirms rsa is unreachable.
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   rust:
     runs-on: ubuntu-latest
